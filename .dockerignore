@@ -1,0 +1,11 @@
+.venv/
+**/__pycache__/
+**/*.pyc
+.git/
+.github/
+**/logs/
+docker-compose*.yml
+Caddyfile
+README.md
+**/README.md
+.python-version

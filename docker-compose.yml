@@ -1,0 +1,40 @@
+services:
+  inventory-backend:
+    image: ghcr.io/analyticace/inventory-tool-backend:latest
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/health')\" 2>/dev/null || exit 1"]
+      interval: 300s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - backend-logs:/app/logs
+    networks:
+      - default
+      - caddy-net
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - com.centurylinklabs.watchtower.scope=inventory
+
+  inventory-watchtower:
+    image: containrrr/watchtower:1.7.1
+    command: --interval 60 --cleanup --label-enable --scope inventory
+    environment:
+      - DOCKER_API_VERSION=1.41
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/shalom/.docker/config.json:/config.json:ro
+    restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.scope=inventory
+
+volumes:
+  backend-logs:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.211.0.0/24
+  caddy-net:
+    external: true

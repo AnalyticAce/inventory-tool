@@ -92,6 +92,7 @@ def _stock_detail_location_multi_args(params: dict) -> list:
     return [list(codes)]
 
 def _sold_orders_args(params: dict) -> list:
+    from datetime import datetime
     country_code = params.get("country_code")
     date_from = params.get("date_from")
     date_to = params.get("date_to")
@@ -99,7 +100,13 @@ def _sold_orders_args(params: dict) -> list:
         raise ValueError("country_code is required")
     if not date_from or not date_to:
         raise ValueError("date_from and date_to are required")
-    return [str(country_code), str(date_from), str(date_to)]
+    # Parse to datetime objects so asyncpg doesn't reject string input
+    try:
+        dt_from = datetime.fromisoformat(str(date_from).strip())
+        dt_to = datetime.fromisoformat(str(date_to).strip())
+    except ValueError as e:
+        raise ValueError(f"Invalid date format: {e}")
+    return [str(country_code), dt_from, dt_to]
 
 def _sold_summary_args(params: dict) -> list:
     order_numbers = params.get("order_numbers")
@@ -268,8 +275,8 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         FROM order_detail a
         JOIN customer_address b ON a.customer_id = b.customer_id
         WHERE b.country_code = $1
-          AND a.down_payment_date >= $2::timestamp
-          AND a.down_payment_date <  $3::timestamp
+          AND a.down_payment_date >= $2
+          AND a.down_payment_date <  $3
         """,
         "loan", _sold_orders_args,
     ),

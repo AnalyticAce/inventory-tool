@@ -30,7 +30,7 @@ USER_MGMT_DATABASE_URL = os.environ.get(
 
 # Loan DB — hosts order_detail and customer_address
 # Set LOAN_DATABASE_URL in the server environment
-LOAN_DATABASE_URL = os.environ.get("LOAN_DATABASE_URL", "postgresql://kunal:qamtlDTbBxPoxmZq@skp-loan-mgmt-prod-new-replica-2.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_loan_management")
+LOAN_DATABASE_URL = os.environ.get("LOAN_DATABASE_URL", "")
 
 MAX_SERIALS_PER_REQUEST = 500
 STATEMENT_TIMEOUT_MS = 60_000
@@ -450,5 +450,9 @@ async def run_query(
             f"error_type={type(e).__name__} error={e}"
         )
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+    # Original four queryIds keep the legacy {"rows": [...]} shape
+    if body.query_id in ("sp_by_primary", "sp_by_secondary", "map_by_primary", "map_by_secondary"):
+        return {"rows": [dict(r) for r in records]}
 
     return [dict(r) for r in records]

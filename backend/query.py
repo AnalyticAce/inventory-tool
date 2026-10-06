@@ -29,10 +29,10 @@ USER_MGMT_DATABASE_URL = os.environ.get(
 )
 
 # Loan DB — hosts order_detail and customer_address
-# Set LOAN_DATABASE_URL in the server environment
 LOAN_DATABASE_URL = os.environ.get(
-    "LOAN_DATABASE_URL", 
-    "postgresql://kunal:qamtlDTbBxPoxmZq@skp-loan-mgmt-prod-new-replica-2.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_loan_management")
+    "LOAN_DATABASE_URL",
+    "postgresql://kunal:qamtlDTbBxPoxmZq@skp-loan-mgmt-prod-new-replica-2.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_loan_management"
+)
 
 MAX_SERIALS_PER_REQUEST = 500
 STATEMENT_TIMEOUT_MS = 60_000
@@ -267,7 +267,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         SELECT a.order_number, a.down_payment_date AS sold_date, b.area_code
         FROM order_detail a
         JOIN customer_address b ON a.customer_id = b.customer_id
-        WHERE a.country_code = $1
+        WHERE b.country_code = $1
           AND a.down_payment_date >= $2::timestamp
           AND a.down_payment_date <  $3::timestamp
         """,

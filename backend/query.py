@@ -281,6 +281,25 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         "loan", _sold_orders_args,
     ),
 
+    # ── CSM Stock Report — inventory DB (sold serials) ───────────────────────
+    "sold_serials": (
+        """
+        SELECT
+            a.holding_facility_location_name,
+            a.serial_number,
+            a.order_number,
+            b.code  AS sku_code,
+            d.name  AS sku_family
+        FROM public.serialized_product a
+        JOIN public.sku_model b ON b.id = a.sku_model_id
+        JOIN public.sku d       ON d.id = b.sku_id
+        WHERE a.order_number = ANY($1::text[])
+          AND a.transition_status_id = 5
+        ORDER BY a.holding_facility_location_name, b.code
+        """,
+        "inventory", _sold_summary_args,
+    ),
+
     # ── CSM Stock Report — inventory DB (sold summary) ────────────────────────
     "sold_summary": (
         """

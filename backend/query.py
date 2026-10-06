@@ -13,22 +13,24 @@ __all__ = ["query_router", "lifespan"]
 logger = logging.getLogger("inventory_logger")
 
 # ---------------------------------------------------------------------------
-# Config & guardrails
+# Config
 # ---------------------------------------------------------------------------
 
 API_KEY = os.environ.get("API_KEY", "8c4f4fbe2a18300fcc13024720e29c7b828bc0e168867c8d5c")
 
-# Inventory DB (prod_skp_inventory_management) — existing connection
 INVENTORY_DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://kunal:qamtlDTbBxPoxmZq@skp-inv-mgmt-prod-replica-0.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_inventory_management",
 )
 
-# User management DB (prod_skp_user_management)
 USER_MGMT_DATABASE_URL = os.environ.get(
     "USER_MGMT_DATABASE_URL",
     "postgresql://kunal:qamtlDTbBxPoxmZq@skp-user-mgmt-prod-replica-0.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_user_management",
 )
+
+# Loan DB — hosts order_detail and customer_address
+# Set LOAN_DATABASE_URL in the server environment
+LOAN_DATABASE_URL = os.environ.get("LOAN_DATABASE_URL", "postgresql://kunal:qamtlDTbBxPoxmZq@skp-loan-mgmt-prod-new-replica-2.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_loan_management")
 
 MAX_SERIALS_PER_REQUEST = 500
 STATEMENT_TIMEOUT_MS = 60_000
@@ -87,12 +89,29 @@ def _stock_detail_location_multi_args(params: dict) -> list:
         raise ValueError("facility_codes is required and must not be empty")
     return [list(codes)]
 
+def _sold_orders_args(params: dict) -> list:
+    country_code = params.get("country_code")
+    date_from = params.get("date_from")
+    date_to = params.get("date_to")
+    if not country_code:
+        raise ValueError("country_code is required")
+    if not date_from or not date_to:
+        raise ValueError("date_from and date_to are required")
+    return [str(country_code), str(date_from), str(date_to)]
+
+def _sold_summary_args(params: dict) -> list:
+    order_numbers = params.get("order_numbers")
+    if not order_numbers:
+        raise ValueError("order_numbers is required and must not be empty")
+    return [list(order_numbers)]
+
 # ---------------------------------------------------------------------------
 # Query registry
 # ---------------------------------------------------------------------------
 
 QUERIES: dict[str, tuple[str, str, Any]] = {
 
+    # ── Original four ────────────────────────────────────────────────────────
     "sp_by_primary": (
         """
         SELECT sp.serial_number, sp.secondary_serial_number, sp.transition_status_id,
@@ -102,8 +121,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         LEFT JOIN public.sku_model sm ON sp.sku_model_id = sm.id
         WHERE sp.serial_number = ANY($1::text[])
         """,
-        "inventory",
-        _serials_args,
+        "inventory", _serials_args,
     ),
     "sp_by_secondary": (
         """
@@ -114,8 +132,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         LEFT JOIN public.sku_model sm ON sp.sku_model_id = sm.id
         WHERE sp.secondary_serial_number = ANY($1::text[])
         """,
-        "inventory",
-        _serials_args,
+        "inventory", _serials_args,
     ),
     "map_by_primary": (
         """
@@ -123,8 +140,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         FROM public.secondary_serial_number_mapping
         WHERE primary_serial_number = ANY($1::text[])
         """,
-        "inventory",
-        _serials_args,
+        "inventory", _serials_args,
     ),
     "map_by_secondary": (
         """
@@ -132,9 +148,10 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         FROM public.secondary_serial_number_mapping
         WHERE secondary_serial_number = ANY($1::text[])
         """,
-        "inventory",
-        _serials_args,
+        "inventory", _serials_args,
     ),
+
+    # ── CSM Stock Report — inventory DB ──────────────────────────────────────
     "sku_list": (
         """
         SELECT id   AS sku_model_id,
@@ -144,36 +161,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         WHERE is_enable = true
         ORDER BY code
         """,
-        "inventory",
-        _sku_list_args,
-    ),
-    "location_tree": (
-        """
-        WITH RECURSIVE location_tree AS (
-            SELECT id, name, code, parent_location_id, location_type_id
-            FROM location
-            WHERE id = $1
-            UNION ALL
-            SELECT l.id, l.name, l.code, l.parent_location_id, l.location_type_id
-            FROM location l
-            JOIN location_tree lt ON l.parent_location_id = lt.id
-        )
-        SELECT id, name, code, location_type_id
-        FROM location_tree
-        ORDER BY location_type_id, name
-        """,
-        "user_mgmt",
-        _location_tree_args,
-    ),
-    "facility_codes_by_type": (
-        """
-        SELECT code
-        FROM public.facility
-        WHERE location_id      = ANY($1::int[])
-          AND facility_type_id = $2
-        """,
-        "user_mgmt",
-        _facility_codes_by_type_args,
+        "inventory", _sku_list_args,
     ),
     "stock_summary": (
         """
@@ -192,8 +180,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
                  sku_model_id,
                  transition_status_id
         """,
-        "inventory",
-        _stock_summary_args,
+        "inventory", _stock_summary_args,
     ),
     "stock_detail_location": (
         """
@@ -209,8 +196,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         WHERE holding_facility_location_code = $1
           AND transition_status_id           IN (2, 3, 4, 6, 7)
         """,
-        "inventory",
-        _stock_detail_location_args,
+        "inventory", _stock_detail_location_args,
     ),
     "stock_detail_sku": (
         """
@@ -226,8 +212,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         WHERE holding_facility_location_code = ANY($1::text[])
           AND transition_status_id           IN (2, 3, 4, 6, 7)
         """,
-        "inventory",
-        _stock_detail_sku_args,
+        "inventory", _stock_detail_sku_args,
     ),
     "stock_detail_location_multi": (
         """
@@ -243,28 +228,92 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         WHERE holding_facility = ANY($1::text[])
           AND transition_status_id IN (2, 3, 4, 6, 7)
         """,
-        "inventory",
-        _stock_detail_location_multi_args,
+        "inventory", _stock_detail_location_multi_args,
+    ),
+
+    # ── CSM Stock Report — user management DB ────────────────────────────────
+    "location_tree": (
+        """
+        WITH RECURSIVE location_tree AS (
+            SELECT id, name, code, parent_location_id, location_type_id
+            FROM location
+            WHERE id = $1
+            UNION ALL
+            SELECT l.id, l.name, l.code, l.parent_location_id, l.location_type_id
+            FROM location l
+            JOIN location_tree lt ON l.parent_location_id = lt.id
+        )
+        SELECT id, name, code, location_type_id
+        FROM location_tree
+        ORDER BY location_type_id, name
+        """,
+        "user_mgmt", _location_tree_args,
+    ),
+    "facility_codes_by_type": (
+        """
+        SELECT code
+        FROM public.facility
+        WHERE location_id      = ANY($1::int[])
+          AND facility_type_id = $2
+        """,
+        "user_mgmt", _facility_codes_by_type_args,
+    ),
+
+    # ── CSM Stock Report — loan DB ────────────────────────────────────────────
+    "sold_orders": (
+        """
+        SELECT a.order_number, a.down_payment_date AS sold_date, b.area_code
+        FROM order_detail a
+        JOIN customer_address b ON a.customer_id = b.customer_id
+        WHERE a.country_code = $1
+          AND a.down_payment_date >= $2::timestamp
+          AND a.down_payment_date <  $3::timestamp
+        """,
+        "loan", _sold_orders_args,
+    ),
+
+    # ── CSM Stock Report — inventory DB (sold summary) ────────────────────────
+    "sold_summary": (
+        """
+        SELECT
+            a.holding_facility_location_name,
+            b.code  AS sku_code,
+            d.name  AS sku_family,
+            COUNT(*) AS count
+        FROM public.serialized_product a
+        JOIN public.sku_model b ON b.id = a.sku_model_id
+        JOIN public.sku d       ON d.id = b.sku_id
+        WHERE a.order_number = ANY($1::text[])
+          AND a.transition_status_id = 5
+        GROUP BY
+            a.holding_facility_location_name,
+            b.code,
+            d.name
+        ORDER BY
+            a.holding_facility_location_name,
+            b.code
+        """,
+        "inventory", _sold_summary_args,
     ),
 }
 
 # ---------------------------------------------------------------------------
-# Pool lifecycle
+# Pool lifecycle — three pools
 # ---------------------------------------------------------------------------
 
 inventory_pool: asyncpg.Pool | None = None
 user_mgmt_pool: asyncpg.Pool | None = None
+loan_pool: asyncpg.Pool | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global inventory_pool, user_mgmt_pool
+    global inventory_pool, user_mgmt_pool, loan_pool
 
     try:
         inventory_pool = await asyncpg.create_pool(
             dsn=INVENTORY_DATABASE_URL,
-            min_size=POOL_MIN,
-            max_size=POOL_MAX,
+            min_size=POOL_MIN, max_size=POOL_MAX,
             max_inactive_connection_lifetime=30,
             command_timeout=STATEMENT_TIMEOUT_MS / 1000,
         )
@@ -277,8 +326,7 @@ async def lifespan(app: FastAPI):
         try:
             user_mgmt_pool = await asyncpg.create_pool(
                 dsn=USER_MGMT_DATABASE_URL,
-                min_size=POOL_MIN,
-                max_size=POOL_MAX,
+                min_size=POOL_MIN, max_size=POOL_MAX,
                 max_inactive_connection_lifetime=30,
                 command_timeout=STATEMENT_TIMEOUT_MS / 1000,
             )
@@ -287,19 +335,29 @@ async def lifespan(app: FastAPI):
             logger.exception("failed to create user_mgmt db pool")
             raise
     else:
-        logger.warning(
-            "USER_MGMT_DATABASE_URL not set — location_tree and facility_codes_by_type "
-            "queries will fail at runtime"
-        )
+        logger.warning("USER_MGMT_DATABASE_URL not set")
+
+    if LOAN_DATABASE_URL:
+        try:
+            loan_pool = await asyncpg.create_pool(
+                dsn=LOAN_DATABASE_URL,
+                min_size=POOL_MIN, max_size=POOL_MAX,
+                max_inactive_connection_lifetime=30,
+                command_timeout=STATEMENT_TIMEOUT_MS / 1000,
+            )
+            logger.info("loan db pool created")
+        except Exception:
+            logger.exception("failed to create loan db pool")
+            raise
+    else:
+        logger.warning("LOAN_DATABASE_URL not set — sold_orders queries will fail at runtime")
 
     yield
 
-    if inventory_pool:
-        await inventory_pool.close()
-        logger.info("inventory db pool closed")
-    if user_mgmt_pool:
-        await user_mgmt_pool.close()
-        logger.info("user_mgmt db pool closed")
+    for p, name in [(inventory_pool, "inventory"), (user_mgmt_pool, "user_mgmt"), (loan_pool, "loan")]:
+        if p:
+            await p.close()
+            logger.info(f"{name} db pool closed")
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +366,6 @@ async def lifespan(app: FastAPI):
 
 _window_start = 0.0
 _window_count = 0
-
 
 def _rate_limited() -> bool:
     global _window_start, _window_count
@@ -327,7 +384,6 @@ class QueryRequest(BaseModel):
     query_id: str = Field(alias="queryId")
     serials: list[str] | None = Field(default=None, max_length=MAX_SERIALS_PER_REQUEST)
     params: dict[str, Any] | None = Field(default=None)
-
     model_config = {"populate_by_name": True}
 
 
@@ -373,9 +429,12 @@ async def run_query(
 
     if db_name == "user_mgmt":
         if user_mgmt_pool is None:
-            logger.error(f"user_mgmt pool not available queryId={body.query_id}")
             raise HTTPException(status_code=503, detail="user management database not configured")
         active_pool = user_mgmt_pool
+    elif db_name == "loan":
+        if loan_pool is None:
+            raise HTTPException(status_code=503, detail="loan database not configured — set LOAN_DATABASE_URL on the server")
+        active_pool = loan_pool
     else:
         active_pool = inventory_pool
 

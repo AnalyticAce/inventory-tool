@@ -28,7 +28,7 @@ INVENTORY_DATABASE_URL = os.environ.get(
 # Set USER_MGMT_DATABASE_URL in the server environment (same host, different DB,
 # or a different host entirely — Shalom to supply the correct DSN).
 USER_MGMT_DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
+    "USER_MGMT_DATABASE_URL",
     "postgresql://kunal:qamtlDTbBxPoxmZq@skp-user-mgmt-prod-replica-0.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_user_management",
 )
 

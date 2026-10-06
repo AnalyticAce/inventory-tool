@@ -24,9 +24,7 @@ INVENTORY_DATABASE_URL = os.environ.get(
     "postgresql://kunal:qamtlDTbBxPoxmZq@skp-inv-mgmt-prod-replica-0.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_inventory_management",
 )
 
-# User management DB (prod_skp_user_management) — new connection
-# Set USER_MGMT_DATABASE_URL in the server environment (same host, different DB,
-# or a different host entirely — Shalom to supply the correct DSN).
+# User management DB (prod_skp_user_management)
 USER_MGMT_DATABASE_URL = os.environ.get(
     "USER_MGMT_DATABASE_URL",
     "postgresql://kunal:qamtlDTbBxPoxmZq@skp-user-mgmt-prod-replica-0.c2i02uy25hsv.ap-south-1.rds.amazonaws.com:5432/prod_skp_user_management",
@@ -38,12 +36,8 @@ POOL_MIN, POOL_MAX = 0, 3
 RATE_LIMIT_PER_MINUTE = 60
 
 # ---------------------------------------------------------------------------
-# Query registry
-# Each entry: sql, which pool to use, and a validator that checks the params
-# dict and returns the positional args list for asyncpg.
+# Arg builders
 # ---------------------------------------------------------------------------
-
-# ── Original four (inventory DB, serials param) ─────────────────────────────
 
 def _serials_args(params: dict) -> list:
     serials = params.get("serials", [])
@@ -51,19 +45,14 @@ def _serials_args(params: dict) -> list:
         raise ValueError("serials list is required and must not be empty")
     return [[s.strip() for s in serials if s and s.strip()]]
 
-
-# ── New CSM Stock Report queries ─────────────────────────────────────────────
-
 def _sku_list_args(params: dict) -> list:
-    return []   # no params
-
+    return []
 
 def _location_tree_args(params: dict) -> list:
     cid = params.get("country_id")
     if cid is None:
         raise ValueError("country_id is required")
     return [int(cid)]
-
 
 def _facility_codes_by_type_args(params: dict) -> list:
     loc_ids = params.get("location_ids")
@@ -74,13 +63,11 @@ def _facility_codes_by_type_args(params: dict) -> list:
         raise ValueError("facility_type_id is required")
     return [[int(i) for i in loc_ids], int(ftype)]
 
-
 def _stock_summary_args(params: dict) -> list:
     codes = params.get("location_codes")
     if not codes:
         raise ValueError("location_codes is required and must not be empty")
     return [list(codes)]
-
 
 def _stock_detail_location_args(params: dict) -> list:
     code = params.get("location_code")
@@ -88,13 +75,11 @@ def _stock_detail_location_args(params: dict) -> list:
         raise ValueError("location_code is required")
     return [str(code)]
 
-
 def _stock_detail_sku_args(params: dict) -> list:
     codes = params.get("location_codes")
     if not codes:
         raise ValueError("location_codes is required and must not be empty")
     return [list(codes)]
-
 
 def _stock_detail_location_multi_args(params: dict) -> list:
     codes = params.get("facility_codes")
@@ -102,12 +87,12 @@ def _stock_detail_location_multi_args(params: dict) -> list:
         raise ValueError("facility_codes is required and must not be empty")
     return [list(codes)]
 
+# ---------------------------------------------------------------------------
+# Query registry
+# ---------------------------------------------------------------------------
 
-# Registry: queryId -> (sql, db, arg_builder)
-# db is "inventory" or "user_mgmt"
 QUERIES: dict[str, tuple[str, str, Any]] = {
 
-    # ── Original four ────────────────────────────────────────────────────────
     "sp_by_primary": (
         """
         SELECT sp.serial_number, sp.secondary_serial_number, sp.transition_status_id,
@@ -150,8 +135,6 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         "inventory",
         _serials_args,
     ),
-
-    # ── CSM Stock Report — user management DB ────────────────────────────────
     "sku_list": (
         """
         SELECT id   AS sku_model_id,
@@ -161,7 +144,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         WHERE is_enable = true
         ORDER BY code
         """,
-        "inventory",   # sku_model lives in the inventory DB
+        "inventory",
         _sku_list_args,
     ),
     "location_tree": (
@@ -192,8 +175,6 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         "user_mgmt",
         _facility_codes_by_type_args,
     ),
-
-    # ── CSM Stock Report — inventory DB ──────────────────────────────────────
     "stock_summary": (
         """
         SELECT holding_facility_location_code,
@@ -268,7 +249,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Pool lifecycle — two pools
+# Pool lifecycle
 # ---------------------------------------------------------------------------
 
 inventory_pool: asyncpg.Pool | None = None
@@ -279,7 +260,6 @@ user_mgmt_pool: asyncpg.Pool | None = None
 async def lifespan(app: FastAPI):
     global inventory_pool, user_mgmt_pool
 
-    # Inventory pool (always required)
     try:
         inventory_pool = await asyncpg.create_pool(
             dsn=INVENTORY_DATABASE_URL,
@@ -293,7 +273,6 @@ async def lifespan(app: FastAPI):
         logger.exception("failed to create inventory db pool")
         raise
 
-    # User management pool (required for location_tree and facility_codes_by_type)
     if USER_MGMT_DATABASE_URL:
         try:
             user_mgmt_pool = await asyncpg.create_pool(
@@ -324,7 +303,7 @@ async def lifespan(app: FastAPI):
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter (unchanged)
+# Rate limiter
 # ---------------------------------------------------------------------------
 
 _window_start = 0.0
@@ -341,16 +320,12 @@ def _rate_limited() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Request model — backward-compatible
-# Old callers send { queryId, serials: [...] }
-# New callers send { queryId, params: { ... } }
+# Request model
 # ---------------------------------------------------------------------------
 
 class QueryRequest(BaseModel):
     query_id: str = Field(alias="queryId")
-    # Original field — kept for the four existing queryIds
     serials: list[str] | None = Field(default=None, max_length=MAX_SERIALS_PER_REQUEST)
-    # New field — used by all seven CSM Stock Report queryIds
     params: dict[str, Any] | None = Field(default=None)
 
     model_config = {"populate_by_name": True}
@@ -386,7 +361,6 @@ async def run_query(
 
     sql, db_name, arg_builder = entry
 
-    # Build positional args — merge serials into params for backward compat
     merged_params = dict(body.params or {})
     if body.serials is not None:
         merged_params["serials"] = body.serials
@@ -397,14 +371,10 @@ async def run_query(
         logger.warning(f"bad params queryId={body.query_id} client={client} error={e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Route to correct pool
     if db_name == "user_mgmt":
         if user_mgmt_pool is None:
             logger.error(f"user_mgmt pool not available queryId={body.query_id}")
-            raise HTTPException(
-                status_code=503,
-                detail="user management database not configured",
-            )
+            raise HTTPException(status_code=503, detail="user management database not configured")
         active_pool = user_mgmt_pool
     else:
         active_pool = inventory_pool
@@ -415,7 +385,7 @@ async def run_query(
                 records = await conn.fetch(sql, *args)
             else:
                 records = await conn.fetch(sql)
-        except Exception as e:
+    except Exception as e:
         logger.exception(
             f"db error queryId={body.query_id} client={client} "
             f"error_type={type(e).__name__} error={e}"

@@ -415,11 +415,11 @@ async def run_query(
                 records = await conn.fetch(sql, *args)
             else:
                 records = await conn.fetch(sql)
-    except Exception as e:
+        except Exception as e:
         logger.exception(
             f"db error queryId={body.query_id} client={client} "
             f"error_type={type(e).__name__} error={e}"
         )
-        raise HTTPException(status_code=500, detail="db error")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     return [dict(r) for r in records]

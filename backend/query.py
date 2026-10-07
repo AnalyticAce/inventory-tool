@@ -473,7 +473,7 @@ async def run_query(
     else:
         active_pool = inventory_pool
 
-    try:
+    async def _execute_query():
         async with active_pool.acquire() as conn:
             # Use READ COMMITTED on the detail queries to avoid
             # SerializationError conflicts with replica recovery
@@ -485,15 +485,33 @@ async def run_query(
                     "SET LOCAL default_transaction_isolation TO 'read committed'"
                 )
             if args:
-                records = await conn.fetch(sql, *args)
+                return await conn.fetch(sql, *args)
             else:
-                records = await conn.fetch(sql)
+                return await conn.fetch(sql)
+
+    try:
+        records = await _execute_query()
     except Exception as e:
-        logger.exception(
-            f"db error queryId={body.query_id} client={client} "
-            f"error_type={type(e).__name__} error={e}"
-        )
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        # ConnectionDoesNotExistError: stale connection returned from pool.
+        # One retry is sufficient — the pool will allocate a fresh connection.
+        if "ConnectionDoesNotExistError" in type(e).__name__ or "ConnectionDoesNotExist" in str(e):
+            logger.warning(
+                f"Stale connection for queryId={body.query_id}, retrying once. error={e}"
+            )
+            try:
+                records = await _execute_query()
+            except Exception as e2:
+                logger.exception(
+                    f"db error (retry) queryId={body.query_id} client={client} "
+                    f"error_type={type(e2).__name__} error={e2}"
+                )
+                raise HTTPException(status_code=500, detail=f"{type(e2).__name__}: {e2}")
+        else:
+            logger.exception(
+                f"db error queryId={body.query_id} client={client} "
+                f"error_type={type(e).__name__} error={e}"
+            )
+            raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     # Original four queryIds keep the legacy {"rows": [...]} shape
     if body.query_id in ("sp_by_primary", "sp_by_secondary", "map_by_primary", "map_by_secondary"):

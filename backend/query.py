@@ -468,6 +468,15 @@ async def run_query(
 
     try:
         async with active_pool.acquire() as conn:
+            # Use READ COMMITTED on the detail queries to avoid
+            # SerializationError conflicts with replica recovery
+            if body.query_id in (
+                "stock_detail_location", "stock_detail_sku",
+                "stock_detail_location_multi", "stock_summary",
+            ):
+                await conn.execute(
+                    "SET LOCAL default_transaction_isolation TO 'read committed'"
+                )
             if args:
                 records = await conn.fetch(sql, *args)
             else:

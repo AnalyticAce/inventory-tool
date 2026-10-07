@@ -252,7 +252,7 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
             FROM location l
             JOIN location_tree lt ON l.parent_location_id = lt.id
         )
-        SELECT id, name, code, location_type_id
+        SELECT id, name, code, parent_location_id, location_type_id
         FROM location_tree
         ORDER BY location_type_id, name
         """,

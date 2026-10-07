@@ -241,10 +241,13 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
                transition_status_id,
                held_since
         FROM public.serialized_product
-        WHERE holding_facility = ANY($1::text[])
-          AND transition_status_id IN (2, 3, 4, 6, 7)
+        WHERE holding_facility_location_code = ANY($1::text[])
+          AND transition_status_id           IN (2, 3, 4, 6, 7)
         """,
-        "inventory", _stock_detail_location_multi_args,
+        # Filter on the indexed location_code column (339 Kenya codes) rather than
+        # holding_facility (64 222 facility codes) — same index used by stock_summary.
+        # Param key is "location_codes" to match _stock_summary_args.
+        "inventory", _stock_summary_args,
     ),
 
     # ── CSM Stock Report — user management DB ────────────────────────────────

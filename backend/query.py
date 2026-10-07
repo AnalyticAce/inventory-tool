@@ -503,11 +503,6 @@ async def run_query(
                 # would otherwise apply to a separate implicit transaction and
                 # have no effect on the query.
                 #
-                # hot_standby_feedback: tells the primary not to remove row versions
-                # our query still needs, preventing SerializationError conflicts with
-                # WAL recovery on the replica. Session-level, not LOCAL, so it takes
-                # effect before the transaction begins and persists for the connection.
-                await conn.execute("SET hot_standby_feedback = on")
                 async with conn.transaction(isolation="read_committed"):
                     await conn.execute(
                         f"SET LOCAL statement_timeout = '{_timeout_ms}ms'"

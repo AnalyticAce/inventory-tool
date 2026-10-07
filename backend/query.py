@@ -77,6 +77,10 @@ def _stock_detail_location_args(params: dict) -> list:
     code = params.get("location_code")
     if not code:
         raise ValueError("location_code is required")
+    limit = params.get("limit")
+    offset = params.get("offset")
+    if limit is not None and offset is not None:
+        return [str(code), int(limit), int(offset)]
     return [str(code)]
 
 def _stock_detail_sku_args(params: dict) -> list:
@@ -204,6 +208,9 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         FROM public.serialized_product
         WHERE holding_facility_location_code = $1
           AND transition_status_id           IN (2, 3, 4, 6, 7)
+        ORDER BY id
+        LIMIT  COALESCE($2::bigint, 2147483647)
+        OFFSET COALESCE($3::bigint, 0)
         """,
         "inventory", _stock_detail_location_args,
     ),

@@ -36,7 +36,13 @@ LOAN_DATABASE_URL = os.environ.get(
 
 MAX_SERIALS_PER_REQUEST = 500
 STATEMENT_TIMEOUT_MS = 60_000
+# stock_detail_location_multi may scan a large number of rows for big countries
+# (e.g. all-Kenya: 339 location codes, indexed). Give it 2× headroom.
+AGED_STOCK_TIMEOUT_MS = 120_000
 POOL_MIN, POOL_MAX = 0, 3
+# Pool command_timeout must exceed AGED_STOCK_TIMEOUT_MS so asyncpg doesn't
+# cancel before Postgres does. 130 s gives 10 s headroom over the 120 s limit.
+POOL_COMMAND_TIMEOUT_S = 130
 RATE_LIMIT_PER_MINUTE = 60
 
 # ---------------------------------------------------------------------------
@@ -79,9 +85,13 @@ def _stock_detail_location_args(params: dict) -> list:
         raise ValueError("location_code is required")
     limit = params.get("limit")
     offset = params.get("offset")
-    if limit is not None and offset is not None:
-        return [str(code), int(limit), int(offset)]
-    return [str(code)]
+    # Always pass all three args — the SQL uses COALESCE($2, ...) and COALESCE($3, ...)
+    # so None is safe when the caller wants an unbounded full fetch.
+    return [
+        str(code),
+        int(limit) if limit is not None else None,
+        int(offset) if offset is not None else None,
+    ]
 
 def _stock_detail_sku_args(params: dict) -> list:
     codes = params.get("location_codes")
@@ -353,7 +363,7 @@ async def lifespan(app: FastAPI):
             dsn=INVENTORY_DATABASE_URL,
             min_size=POOL_MIN, max_size=POOL_MAX,
             max_inactive_connection_lifetime=30,
-            command_timeout=STATEMENT_TIMEOUT_MS / 1000,
+            command_timeout=POOL_COMMAND_TIMEOUT_S,
         )
         logger.info("inventory db pool created")
     except Exception:
@@ -366,7 +376,7 @@ async def lifespan(app: FastAPI):
                 dsn=USER_MGMT_DATABASE_URL,
                 min_size=POOL_MIN, max_size=POOL_MAX,
                 max_inactive_connection_lifetime=30,
-                command_timeout=STATEMENT_TIMEOUT_MS / 1000,
+                command_timeout=POOL_COMMAND_TIMEOUT_S,
             )
             logger.info("user_mgmt db pool created")
         except Exception:
@@ -381,7 +391,7 @@ async def lifespan(app: FastAPI):
                 dsn=LOAN_DATABASE_URL,
                 min_size=POOL_MIN, max_size=POOL_MAX,
                 max_inactive_connection_lifetime=30,
-                command_timeout=STATEMENT_TIMEOUT_MS / 1000,
+                command_timeout=POOL_COMMAND_TIMEOUT_S,
             )
             logger.info("loan db pool created")
         except Exception:
@@ -479,7 +489,9 @@ async def run_query(
     async def _execute_query():
         async with active_pool.acquire() as conn:
             # Use READ COMMITTED on the detail queries to avoid
-            # SerializationError conflicts with replica recovery
+            # SerializationError conflicts with replica recovery.
+            # Also set an explicit statement_timeout so Postgres enforces it
+            # rather than relying solely on asyncpg's command_timeout.
             if body.query_id in (
                 "stock_detail_location", "stock_detail_sku",
                 "stock_detail_location_multi", "stock_summary",
@@ -487,6 +499,9 @@ async def run_query(
                 await conn.execute(
                     "SET LOCAL default_transaction_isolation TO 'read committed'"
                 )
+            # Aged stock gets extra time — 339-code ANY() scan can be slow on large replicas
+            timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id == "stock_detail_location_multi" else STATEMENT_TIMEOUT_MS
+            await conn.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
             if args:
                 return await conn.fetch(sql, *args)
             else:

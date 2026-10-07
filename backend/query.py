@@ -486,35 +486,61 @@ async def run_query(
     else:
         active_pool = inventory_pool
 
+    # Queries that need explicit isolation + timeout control
+    _needs_isolation = body.query_id in (
+        "stock_detail_location", "stock_detail_sku",
+        "stock_detail_location_multi", "stock_summary",
+    )
+    # Aged stock gets extra time — 339-code ANY() scan can be slow on large replicas
+    _timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id == "stock_detail_location_multi" else STATEMENT_TIMEOUT_MS
+
     async def _execute_query():
         async with active_pool.acquire() as conn:
-            # Use READ COMMITTED on the detail queries to avoid
-            # SerializationError conflicts with replica recovery.
-            # Also set an explicit statement_timeout so Postgres enforces it
-            # rather than relying solely on asyncpg's command_timeout.
-            if body.query_id in (
-                "stock_detail_location", "stock_detail_sku",
-                "stock_detail_location_multi", "stock_summary",
-            ):
-                await conn.execute(
-                    "SET LOCAL default_transaction_isolation TO 'read committed'"
-                )
-            # Aged stock gets extra time — 339-code ANY() scan can be slow on large replicas
-            timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id == "stock_detail_location_multi" else STATEMENT_TIMEOUT_MS
-            await conn.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
-            if args:
-                return await conn.fetch(sql, *args)
+            if _needs_isolation:
+                # Wrap in an explicit READ COMMITTED transaction so that both
+                # SET LOCAL directives and the query share the same transaction.
+                # asyncpg runs statements in autocommit by default, so SET LOCAL
+                # would otherwise apply to a separate implicit transaction and
+                # have no effect on the query.
+                #
+                # hot_standby_feedback: tells the primary not to remove row versions
+                # our query still needs, preventing SerializationError conflicts with
+                # WAL recovery on the replica. Session-level, not LOCAL, so it takes
+                # effect before the transaction begins and persists for the connection.
+                await conn.execute("SET hot_standby_feedback = on")
+                async with conn.transaction(isolation="read_committed"):
+                    await conn.execute(
+                        f"SET LOCAL statement_timeout = '{_timeout_ms}ms'"
+                    )
+                    if args:
+                        return await conn.fetch(sql, *args)
+                    else:
+                        return await conn.fetch(sql)
             else:
-                return await conn.fetch(sql)
+                if args:
+                    return await conn.fetch(sql, *args)
+                else:
+                    return await conn.fetch(sql)
+
+    def _is_retryable(exc: Exception) -> bool:
+        """True for transient errors that a single retry can resolve."""
+        name = type(exc).__name__
+        msg = str(exc)
+        return (
+            "ConnectionDoesNotExistError" in name
+            or "ConnectionDoesNotExist" in msg
+            # Replica WAL-recovery conflict: retry with READ COMMITTED + hot_standby_feedback
+            or "SerializationError" in name
+            or "canceling statement due to conflict with recovery" in msg
+        )
 
     try:
         records = await _execute_query()
     except Exception as e:
-        # ConnectionDoesNotExistError: stale connection returned from pool.
-        # One retry is sufficient — the pool will allocate a fresh connection.
-        if "ConnectionDoesNotExistError" in type(e).__name__ or "ConnectionDoesNotExist" in str(e):
+        if _is_retryable(e):
             logger.warning(
-                f"Stale connection for queryId={body.query_id}, retrying once. error={e}"
+                f"Transient db error for queryId={body.query_id}, retrying once. "
+                f"error_type={type(e).__name__} error={e}"
             )
             try:
                 records = await _execute_query()

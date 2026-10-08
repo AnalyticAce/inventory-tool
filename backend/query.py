@@ -103,7 +103,14 @@ def _stock_detail_location_multi_args(params: dict) -> list:
     codes = params.get("facility_codes")
     if not codes:
         raise ValueError("facility_codes is required and must not be empty")
-    return [list(codes)]
+    limit  = params.get("limit")
+    offset = params.get("offset")
+    # Always return all three args — SQL uses COALESCE($2) and COALESCE($3)
+    return [
+        list(codes),
+        int(limit)  if limit  is not None else None,
+        int(offset) if offset is not None else None,
+    ]
 
 def _sold_orders_args(params: dict) -> list:
     from datetime import datetime
@@ -276,8 +283,11 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         FROM public.serialized_product
         WHERE holding_facility         = ANY($1::text[])
           AND transition_status_id    IN (2, 3, 4, 6, 7)
+        ORDER BY id
+        LIMIT  COALESCE($2::bigint, 2147483647)
+        OFFSET COALESCE($3::bigint, 0)
         """,
-        "inventory", _stock_detail_location_multi_args,  # expects {"facility_codes": [...]}
+        "inventory", _stock_detail_location_multi_args,  # expects {facility_codes, limit?, offset?}
     ),
 
     # ── CSM Stock Report — user management DB ────────────────────────────────

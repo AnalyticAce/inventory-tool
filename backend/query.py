@@ -509,12 +509,14 @@ async def run_query(
     # Queries that need explicit isolation + timeout control
     _needs_isolation = body.query_id in (
         "stock_detail_location", "stock_detail_sku",
-        "stock_detail_location_multi", "stock_detail_facility_multi", "stock_summary",
+        "stock_detail_location_multi", "stock_summary",
     )
-    # Heavy row-scan queries get extra time
-    _timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id in (
-        "stock_detail_location_multi", "stock_detail_facility_multi"
-    ) else STATEMENT_TIMEOUT_MS
+    # Heavy row-scan queries get extra time.
+    # stock_detail_facility_multi is excluded from _needs_isolation — warehouse/SC
+    # facilities are typically 10-15 codes per country, so the query is tiny and
+    # completes in milliseconds. Running it in autocommit (no transaction) avoids
+    # the open-snapshot WAL recovery conflict entirely.
+    _timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id == "stock_detail_location_multi" else STATEMENT_TIMEOUT_MS
 
     async def _execute_query():
         async with active_pool.acquire() as conn:

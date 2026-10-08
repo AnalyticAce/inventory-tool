@@ -260,6 +260,26 @@ QUERIES: dict[str, tuple[str, str, Any]] = {
         "inventory", _stock_summary_args,
     ),
 
+    # Warehouse / service-centre export — filters by facility code (holding_facility),
+    # not location code. Used for facility_type_id IN (3, 4, 5): warehouse, service
+    # centre, refurbishment centre. Batched by the frontend in small sets of facility codes.
+    "stock_detail_facility_multi": (
+        """
+        SELECT serial_number,
+               secondary_serial_number,
+               holding_facility_location_code,
+               holding_facility               AS holding_facility_code,
+               holding_facility_name,
+               sku_model_id,
+               transition_status_id,
+               held_since
+        FROM public.serialized_product
+        WHERE holding_facility         = ANY($1::text[])
+          AND transition_status_id    IN (2, 3, 4, 6, 7)
+        """,
+        "inventory", _stock_detail_location_multi_args,  # expects {"facility_codes": [...]}
+    ),
+
     # ── CSM Stock Report — user management DB ────────────────────────────────
     "location_tree": (
         """
@@ -489,10 +509,12 @@ async def run_query(
     # Queries that need explicit isolation + timeout control
     _needs_isolation = body.query_id in (
         "stock_detail_location", "stock_detail_sku",
-        "stock_detail_location_multi", "stock_summary",
+        "stock_detail_location_multi", "stock_detail_facility_multi", "stock_summary",
     )
-    # Aged stock gets extra time — 339-code ANY() scan can be slow on large replicas
-    _timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id == "stock_detail_location_multi" else STATEMENT_TIMEOUT_MS
+    # Heavy row-scan queries get extra time
+    _timeout_ms = AGED_STOCK_TIMEOUT_MS if body.query_id in (
+        "stock_detail_location_multi", "stock_detail_facility_multi"
+    ) else STATEMENT_TIMEOUT_MS
 
     async def _execute_query():
         async with active_pool.acquire() as conn:
